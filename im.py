@@ -100,7 +100,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-FPGA_OUTCSV = "/home/rahul/Documents/Image-processing/out.csv"
+FPGA_OUTCSV = "/home/rahul/Documents/Image-processing/tmp.csv"
 WIDTH  = 3124
 HEIGHT = 3030
 
