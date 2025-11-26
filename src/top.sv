@@ -1,45 +1,93 @@
-import img_top_pkg::*;
+`timescale 1ns/1ps
 
-module img_top_8(
+module canny_top #(
+    parameter int W = 3124,
+    parameter int H = 3030,
+    parameter int T_LOW  = 50,
+    parameter int T_HIGH = 100
+)(
     input  logic clk, rst_n,
-    input  logic in_valid,
-    input  pix_bus_t pix_in,
-    output logic out_valid,
-    output pix_bus_t pix_out
+    input  logic [7:0] pixel_in,
+    input  logic       in_valid,
+    output logic [7:0] edge_out,
+    output logic       out_valid
 );
 
-    integer x=0,y=0;
-    logic valid_pix;
+    // ------------------ Stage1 : LB → Gaussian ------------------
+    logic g_valid;
+    logic [7:0] g00,g01,g02,g10,g11,g12,g20,g21,g22;
+    linebuffer_3x3 #(.DATA_W(8),.IMG_W(W)) LB_GAUSS(
+        .clk(clk),.rst_n(rst_n),.pixel_in(pixel_in),.valid_in(in_valid),
+        .w00(g00),.w01(g01),.w02(g02),
+        .w10(g10),.w11(g11),.w12(g12),
+        .w20(g20),.w21(g21),.w22(g22),
+        .valid_out(g_valid)
+    );
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if(!rst_n) begin x<=0; y<=0; valid_pix<=0; end
-        else if(in_valid) begin
-            valid_pix<=1;
+    logic [7:0] gpix;
+    logic       g_out;
+    gaussian3x3 GA(.clk(clk),.rst_n(rst_n),.in_valid(g_valid),
+            .p00(g00),.p01(g01),.p02(g02),
+            .p10(g10),.p11(g11),.p12(g12),
+            .p20(g20),.p21(g21),.p22(g22),
+            .pix_out(gpix),.out_valid(g_out));
 
-            x <= x+8;
-            if(x+8 >= WIDTH) begin
-                x<=0; y<=y+1;
-            end
-        end
-    end
+    // ------------------ Stage2 : LB → Sobel ---------------------
+    logic s_valid;
+    logic [7:0] s00,s01,s02,s10,s11,s12,s20,s21,s22;
+    linebuffer_3x3 #(.DATA_W(8),.IMG_W(W)) LB_SOBEL(
+        .clk(clk),.rst_n(rst_n),.pixel_in(gpix),.valid_in(g_out),
+        .w00(s00),.w01(s01),.w02(s02),
+        .w10(s10),.w11(s11),.w12(s12),
+        .w20(s20),.w21(s21),.w22(s22),
+        .valid_out(s_valid)
+    );
 
-    // STOP when complete
-    wire frame_done = (y >= HEIGHT);
+    logic signed [15:0] gx,gy;
+    logic [15:0] mag;
+    logic sobel_out;
+    sobel3x3 SOB(.clk(clk),.rst_n(rst_n),.in_valid(s_valid),
+        .p00(s00),.p01(s01),.p02(s02),
+        .p10(s10),.p11(s11),.p12(s12),
+        .p20(s20),.p21(s21),.p22(s22),
+        .gx(gx),.gy(gy),.mag(mag),.out_valid(sobel_out));
 
-    // PIPELINE CONNECTION
-    pix_bus_t bg = '{default:0};
-    pix_bus_t sub; logic v1;
-    background_subtract u1(clk,pix_in,bg,valid_pix,sub,v1);
+    // ------------------ Stage3 : LB → NMS -----------------------
+    logic nm_valid;
+    logic [15:0] n00,n01,n02,n10,n11,n12,n20,n21,n22;
+    linebuffer_3x3 #(.DATA_W(16),.IMG_W(W)) LB_MAG(
+        .clk(clk),.rst_n(rst_n),.pixel_in(mag),.valid_in(sobel_out),
+        .w00(n00),.w01(n01),.w02(n02),
+        .w10(n10),.w11(n11),.w12(n12),
+        .w20(n20),.w21(n21),.w22(n22),
+        .valid_out(nm_valid)
+    );
 
-    pixel_t W5[5][12]; logic v2;
-    line_buffer_5x5_8px LB5(clk,sub,v1,W5,v2);
+    logic [15:0] mag_nms;
+    logic        nms_o;
+    canny_nms NMS(.clk(clk),.rst_n(rst_n),.in_valid(nm_valid),
+        .gx(gx),.gy(gy),
+        .m00(n00),.m01(n01),.m02(n02),
+        .m10(n10),.m11(n11),.m12(n12),
+        .m20(n20),.m21(n21),.m22(n22),
+        .mag_nms(mag_nms),.out_valid(nms_o));
 
-    pix_bus_t blur; logic v3;
-    gaussian5x5_core GA(clk,v2,W5,blur,v3);
+    // ------------------ Stage4 : LB → Hysteresis ----------------
+    logic hy_valid;
+    logic [15:0] h00,h01,h02,h10,h11,h12,h20,h21,h22;
+    linebuffer_3x3 #(.DATA_W(16),.IMG_W(W)) LB_NMS(
+        .clk(clk),.rst_n(rst_n),.pixel_in(mag_nms),.valid_in(nms_o),
+        .w00(h00),.w01(h01),.w02(h02),
+        .w10(h10),.w11(h11),.w12(h12),
+        .w20(h20),.w21(h21),.w22(h22),
+        .valid_out(hy_valid)
+    );
 
-    pixel_t W3[3][10]; logic v4;
-    line_buffer_3x3_8px LB3(clk,blur,v3,W3,v4);
-
-    sobel3x3_core SOB(clk,v4,W3,pix_out,out_valid);
+    canny_threshold_hyst #(.T_LOW(T_LOW),.T_HIGH(T_HIGH)) HYS(
+        .clk(clk),.rst_n(rst_n),.in_valid(hy_valid),
+        .c(h11),.n00(h00),.n01(h01),.n02(h02),
+                .n10(h10),          .n12(h12),
+                .n20(h20),.n21(h21),.n22(h22),
+        .edge_out(edge_out),.out_valid(out_valid));
 
 endmodule

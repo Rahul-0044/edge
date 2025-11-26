@@ -1,73 +1,31 @@
-module line_buffer_5x5_8px #(parameter W=3124)(
-    input  logic clk,
-    input  pix_bus_t in_pix,
-    input  logic in_valid,
-    output pixel_t win[5][12],
-    output logic out_valid
+module linebuffer_3x3 #(parameter DATA_W=8,IMG_W=640)(
+    input logic clk,rst_n, valid_in,
+    input logic [DATA_W-1:0] pixel_in,
+    output logic [DATA_W-1:0] w00,w01,w02,w10,w11,w12,w20,w21,w22,
+    output logic valid_out
 );
-
-    pixel_t L0[W],L1[W],L2[W],L3[W],L4[W];
+    logic [DATA_W-1:0] l0 [0:IMG_W-1];
+    logic [DATA_W-1:0] l1 [0:IMG_W-1];
     integer col=0,row=0;
 
-    always_ff @(posedge clk) begin
-        if(in_valid) begin
-            for(int i=0;i<8;i++) begin
-                L4[col] <= L3[col];
-                L3[col] <= L2[col];
-                L2[col] <= L1[col];
-                L1[col] <= L0[col];
-                L0[col] <= in_pix[i];
+    logic [DATA_W-1:0] r00,r01,r02,r10,r11,r12,r20,r21,r22;
 
-                col++;
-                if(col==W) begin col=0; row++; end
-            end
+    assign {w00,w01,w02,w10,w11,w12,w20,w21,w22} =
+           {r00,r01,r02,r10,r11,r12,r20,r21,r22};
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if(!rst_n) begin col<=0;row<=0;valid_out<=0; end
+        else if(valid_in) begin
+            if(row==0)         l0[col]=pixel_in;
+            else if(row==1)    l1[col]=pixel_in;
+            else begin         l0[col]=l1[col]; l1[col]=pixel_in; end
+
+            r00<=r01; r01<=r02; r02<= (row<2)?0:l0[col];
+            r10<=r11; r11<=r12; r12<= (row<1)?0:l1[col];
+            r20<=r21; r21<=r22; r22<= pixel_in;
+
+            col++; if(col==IMG_W) begin col=0; row++; end
+            valid_out <= (row>=2 && col>=2);
         end
     end
-
-    always_comb begin
-        for(int r=0;r<5;r++)
-        for(int c=0;c<12;c++) begin
-            int idx = col-12+c; if(idx<0) idx+=W;
-            case(r)
-                0: win[r][c]=L0[idx];
-                1: win[r][c]=L1[idx];
-                2: win[r][c]=L2[idx];
-                3: win[r][c]=L3[idx];
-                4: win[r][c]=L4[idx];
-            endcase
-        end
-    end
-
-    assign out_valid = (row>=4 && col>12);
-endmodule
-module line_buffer_3x3_8px #(parameter W=3124)(
-    input logic clk,
-    input pix_bus_t in_pix,
-    input logic in_valid,
-    output pixel_t win[3][10],
-    output logic out_valid
-);
-    pixel_t A[W],B[W],C[W];
-    integer col=0,row=0;
-
-    always_ff @(posedge clk) begin
-        if(in_valid)
-            for(int i=0;i<8;i++) begin
-                C[col] <= B[col];
-                B[col] <= A[col];
-                A[col] <= in_pix[i];
-                col++; if(col==W) begin col=0; row++; end
-            end
-    end
-
-    always_comb begin
-        for(int c=0;c<10;c++) begin
-            int idx=col-10+c; if(idx<0) idx+=W;
-            win[0][c]=C[idx];
-            win[1][c]=B[idx];
-            win[2][c]=A[idx];
-        end
-    end
-
-    assign out_valid = (row>=2 && col>10);
 endmodule
